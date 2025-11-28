@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   CalendarDays, 
   ShoppingCart, 
@@ -30,8 +30,9 @@ function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingCell, setEditingCell] = useState<{dayIndex: number, categoryId: string} | null>(null);
 
-  // Drag and Drop State
+  // Drag and Drop State (Mouse & Touch)
   const [dragOverCell, setDragOverCell] = useState<string | null>(null);
+  const [activeTouchSource, setActiveTouchSource] = useState<string | null>(null);
 
   // Auto-save effect
   useEffect(() => {
@@ -95,7 +96,31 @@ function App() {
     setIsModalOpen(false);
   };
 
-  // --- Drag and Drop Logic ---
+  // --- Drag and Drop Logic (Shared) ---
+
+  const executeMealCopy = (sourceKey: string, targetKey: string) => {
+    if (sourceKey === targetKey) return;
+
+    const sourceData = data.plan[sourceKey];
+    if (!sourceData) return;
+
+    // Deep copy ingredients to avoid reference issues
+    const copiedIngredients = sourceData.ingredients.map(i => ({...i, id: `copied-${Date.now()}-${i.id}`}));
+
+    setData(prev => ({
+      ...prev,
+      plan: {
+        ...prev.plan,
+        [targetKey]: { 
+          dishName: sourceData.dishName,
+          ingredients: copiedIngredients,
+          preparationMethod: sourceData.preparationMethod
+        }
+      }
+    }));
+  };
+
+  // --- Mouse Drag Events ---
 
   const handleDragStart = (e: React.DragEvent, dayIndex: number, categoryId: string) => {
     const key = `${dayIndex}-${categoryId}`;
@@ -124,27 +149,54 @@ function App() {
     const sourceKey = e.dataTransfer.getData('sourceKey');
     if (!sourceKey) return;
 
-    const sourceData = data.plan[sourceKey];
-    if (!sourceData) return;
-
     const targetKey = `${targetDayIndex}-${targetCategoryId}`;
+    executeMealCopy(sourceKey, targetKey);
+  };
 
-    if (sourceKey === targetKey) return;
+  // --- Touch Drag Events (Mobile) ---
 
-    // Deep copy ingredients to avoid reference issues
-    const copiedIngredients = sourceData.ingredients.map(i => ({...i, id: `copied-${Date.now()}-${i.id}`}));
+  const handleTouchStart = (e: React.TouchEvent, dayIndex: number, categoryId: string) => {
+    const key = `${dayIndex}-${categoryId}`;
+    // Only allow dragging if there is content
+    if (!data.plan[key]?.dishName) return;
 
-    setData(prev => ({
-      ...prev,
-      plan: {
-        ...prev.plan,
-        [targetKey]: { 
-          dishName: sourceData.dishName,
-          ingredients: copiedIngredients,
-          preparationMethod: sourceData.preparationMethod
-        }
+    setActiveTouchSource(key);
+    // Optional: Haptic feedback
+    if (navigator.vibrate) navigator.vibrate(20);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!activeTouchSource) return;
+
+    // Prevent scrolling while dragging a meal
+    if (e.cancelable) e.preventDefault();
+
+    const touch = e.touches[0];
+    // Find the element under the finger
+    const targetElement = document.elementFromPoint(touch.clientX, touch.clientY);
+    
+    // Find the closest parent that is a cell (has data-cell-key)
+    const cell = targetElement?.closest('[data-cell-key]');
+    
+    if (cell) {
+      const targetKey = cell.getAttribute('data-cell-key');
+      if (targetKey && targetKey !== dragOverCell) {
+        setDragOverCell(targetKey);
       }
-    }));
+    } else {
+      setDragOverCell(null);
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!activeTouchSource) return;
+
+    if (dragOverCell) {
+      executeMealCopy(activeTouchSource, dragOverCell);
+    }
+
+    setActiveTouchSource(null);
+    setDragOverCell(null);
   };
 
   // --- Shopping List Logic (With Aggregation) ---
@@ -165,13 +217,11 @@ function App() {
               if (!ing.name) return;
               
               // Key for grouping: unit + name (lowercase)
-              // This groups "un - Ovo" and "Un - ovo" together. 
-              // Does not convert units (g vs kg), they stay separate.
               const key = `${ing.unit.toLowerCase()}-${ing.name.trim().toLowerCase()}`;
               
               if (!map.has(key)) {
                 map.set(key, { 
-                  name: ing.name.trim(), // Keep original casing of first find
+                  name: ing.name.trim(), 
                   quantity: 0, 
                   unit: ing.unit 
                 });
@@ -183,11 +233,9 @@ function App() {
         }
     });
 
-    // Convert map to string list: "500 g - Arroz"
     const list = Array.from(map.values()).map(item => {
-      // If quantity is 0 (e.g. 'a gosto'), usually we just show the name, but logic here:
       if (item.unit === 'a gosto') return `${item.name} (a gosto)`;
-      return `${item.quantity} ${item.unit} - ${item.name}`;
+      return `${parseFloat(item.quantity.toFixed(2))} ${item.unit} - ${item.name}`;
     });
 
     return list.sort();
@@ -200,7 +248,7 @@ function App() {
   // --- Render Helpers ---
 
   const renderPlanner = () => (
-    <div className="overflow-x-auto pb-20 select-none">
+    <div className="overflow-x-auto pb-20 select-none touch-pan-x">
       <div className="min-w-[800px]">
         {/* Header Row */}
         <div className="grid gap-2 mb-2" style={{ gridTemplateColumns: `100px repeat(${data.categories.length}, 1fr)` }}>
@@ -225,39 +273,51 @@ function App() {
               const entry = data.plan[key];
               const isDragOver = dragOverCell === key;
               const hasContent = !!entry?.dishName;
+              const isTouchSource = activeTouchSource === key;
 
               return (
                 <div 
                   key={key}
+                  data-cell-key={key} // Critical for Touch detection
+                  
+                  // Mouse Events
                   draggable={hasContent}
                   onDragStart={(e) => hasContent && handleDragStart(e, dayIndex, cat.id)}
                   onDragOver={(e) => handleDragOver(e, dayIndex, cat.id)}
                   onDragLeave={handleDragLeave}
                   onDrop={(e) => handleDrop(e, dayIndex, cat.id)}
+                  
+                  // Touch Events
+                  onTouchStart={(e) => handleTouchStart(e, dayIndex, cat.id)}
+                  onTouchMove={handleTouchMove}
+                  onTouchEnd={handleTouchEnd}
+                  
                   onClick={() => openEditor(dayIndex, cat.id)}
+                  
                   className={`
-                    min-h-[120px] p-3 border rounded-lg cursor-pointer transition-all duration-200 flex flex-col relative group
-                    ${isDragOver ? 'border-2 border-emerald-500 bg-emerald-50 scale-[1.02] z-10' : ''}
+                    min-h-[120px] p-3 border rounded-lg cursor-pointer transition-all duration-200 flex flex-col relative group select-none
+                    ${isDragOver ? 'border-2 border-emerald-500 bg-emerald-50 scale-[1.02] z-10 shadow-lg' : ''}
+                    ${isTouchSource ? 'opacity-70 ring-2 ring-emerald-400' : ''}
                     ${!isDragOver && hasContent ? 'bg-white border-emerald-200 hover:border-emerald-400 shadow-sm' : ''}
                     ${!isDragOver && !hasContent ? 'bg-gray-50 border-gray-200 hover:bg-gray-100 hover:border-gray-300 border-dashed' : ''}
                   `}
                 >
                   {hasContent ? (
                     <>
-                      <div className="flex justify-between items-start mb-1">
+                      <div className="flex justify-between items-start mb-1 pointer-events-none">
                         <div className="font-bold text-gray-800 line-clamp-2 leading-tight pr-4">{entry.dishName}</div>
                         {/* Drag Handle Indicator */}
-                        <div className="text-gray-300 group-hover:text-emerald-500 cursor-grab active:cursor-grabbing">
+                        <div className="text-gray-300 group-hover:text-emerald-500">
                            <GripHorizontal size={16} />
                         </div>
                       </div>
                       
                       {/* Description / Preparation Method Preview */}
-                      <div className="text-xs text-gray-500 line-clamp-3 italic mt-1 flex-1">
+                      <div className="text-xs text-gray-500 line-clamp-3 italic mt-1 flex-1 pointer-events-none">
                         {entry.preparationMethod || "Sem modo de preparo"}
                       </div>
                       
-                      <div className="flex justify-between items-end mt-2 pt-2 border-t border-gray-100 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex justify-between items-end mt-2 pt-2 border-t border-gray-100 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
                          <div className="text-[10px] text-gray-400 flex items-center gap-1">
                            <Copy size={10} />
                            <span>Copiar</span>
@@ -268,7 +328,7 @@ function App() {
                       </div>
                     </>
                   ) : (
-                    <div className="flex-1 flex items-center justify-center text-gray-300">
+                    <div className="flex-1 flex items-center justify-center text-gray-300 pointer-events-none">
                       <Plus size={24} />
                     </div>
                   )}

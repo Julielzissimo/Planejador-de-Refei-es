@@ -28,11 +28,11 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        # Alterado de 'npm ci' para 'npm install' para ser mais robusto caso o package-lock.json não exista ou esteja dessincronizado
+        run: npm install
 
       - name: Build
         env:
-          # AQUI A MÁGICA ACONTECE: O GitHub pega o segredo que você cadastrou e passa para o build
           VITE_API_KEY: ${{ secrets.VITE_API_KEY }}
         run: npm run build
 
